@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tesla Battery Guru — Live Demo (POC)</title>
+<meta name="description" content="Free Tesla battery-health estimator. Interactive proof-of-concept demo of tesla-battery-guru: estimate degradation from charge sessions, see the care score and 3-day streak alerts.">
+<style>
+  :root { --bg:#0b0e13; --panel:#141922; --line:#232c3a; --text:#e8edf4; --muted:#93a1b5; --red:#e82127; --green:#37d67a; --amber:#f5b544; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:900px; margin:0 auto; padding:24px 16px 64px; }
+  header { text-align:center; padding:28px 0 8px; }
+  h1 { font-size:2rem; margin:0 0 8px; }
+  h1 .red { color:var(--red); }
+  .sub { color:var(--muted); max-width:660px; margin:0 auto; line-height:1.55; }
+  .badge { display:inline-block; margin-top:14px; padding:4px 12px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:.82rem; }
+  .badge b { color:var(--amber); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-top:18px; }
+  .panel h2 { margin:0 0 10px; font-size:1.1rem; }
+  .rules { display:flex; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:.92rem; align-items:end; }
+  .rules label { display:flex; flex-direction:column; gap:4px; }
+  .rules input, .rules select { background:#0d1117; border:1px solid var(--line); border-radius:8px; color:var(--text); padding:7px 9px; font-size:.95rem; }
+  button { border:1px solid var(--line); background:#0d1117; color:var(--text); border-radius:999px; padding:8px 14px; cursor:pointer; font-size:.9rem; margin-top:12px; }
+  button:hover { border-color:var(--red); }
+  button.primary { background:var(--red); border-color:var(--red); color:#fff; }
+  .result { font-size:1.25rem; margin-top:14px; line-height:1.5; }
+  .result .big { color:var(--green); font-weight:700; }
+  .result .warn { color:var(--amber); font-weight:700; }
+  .breakdown { color:var(--muted); font-size:.92rem; margin-top:6px; line-height:1.6; }
+  table { width:100%; border-collapse:collapse; font-size:.92rem; margin-top:10px; }
+  th { text-align:left; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line); padding:6px 4px; }
+  td { padding:6px 4px; border-bottom:1px solid #1b2330; }
+  td.num, th.num { text-align:right; }
+  td input { background:#0d1117; border:1px solid var(--line); border-radius:6px; color:var(--text); padding:4px 6px; width:72px; }
+  .note { color:var(--muted); font-size:.85rem; line-height:1.55; margin-top:14px; }
+  a { color:var(--green); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Tesla <span class="red">Battery Guru</span></h1>
+    <p class="sub">How much has your battery actually degraded? Feed in charge sessions
+    (battery % before → after, kWh added) and get the same median-pack estimate,
+    care score, and 3-day streak alerts the app computes — no install, no car, no account.</p>
+    <span class="badge"><b>DEMO DATA</b> — pretend car, pretend sessions. This page never connects to a real Tesla.</span>
+  </header>
+
+  <div class="panel">
+    <h2>Your pack, estimated</h2>
+    <div class="rules">
+      <label>Nominal pack when new (kWh)<input id="nominal" type="number" value="75" min="20" max="220"></label>
+      <label>Everyday charge limit (%)<input id="limit" type="number" value="80" min="50" max="100"></label>
+    </div>
+    <div class="result" id="result"></div>
+    <div class="breakdown" id="breakdown"></div>
+    <p class="note">Method: a session from A% to B% adding K kWh implies a pack of
+    K ÷ ((B − A) ÷ 100) kWh. Sessions with swings under 20 points are ignored —
+    dividing by a tiny swing magnifies rounding error. The estimate is the median
+    of the rest, so one odd session can't move it. Degradation = 1 − (estimated ÷ nominal).</p>
+  </div>
+
+  <div class="panel">
+    <h2>Demo month sessions — edit them, or add your own</h2>
+    <table id="sessions">
+      <thead><tr><th>Date</th><th>Location</th><th class="num">Start %</th><th class="num">End %</th><th class="num">kWh</th><th class="num">Sat at end (h)</th><th class="num">Implied pack</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <button class="primary" id="add">+ Add a session</button>
+    <button id="reset">Reset demo month</button>
+    <p class="note">Try it: change the Sep 10–12 rows so the car no longer sits at 100%
+    for 8 hours — watch the streak alert disappear and the care score climb.</p>
+  </div>
+
+  <div class="panel">
+    <h2>What the real app adds</h2>
+    <p class="note" style="margin-top:0">The full app (<a href="https://github.com/rtmalikian/tesla-battery-guru">github.com/rtmalikian/tesla-battery-guru</a>)
+    records real sessions from your Tesla (or ones you type in), keeps them on your own
+    computer, and exposes an OpenAI-compatible coach API
+    (<code>/v1/chat/completions</code>, <code>/v1/models</code>, <code>/v1/embeddings</code>)
+    so any AI client can answer "how degraded is my battery?" from your own numbers.
+    It never commands a car and sends your data only to the AI backend you configure —
+    or nowhere at all, with the built-in rules engine.</p>
+  </div>
+</div>
+<script>
+const DEMO = [
+  ["Sep 03", "home", 30, 80, 35.0, 0],
+  ["Sep 07", "home", 20, 80, 42.0, 0],
+  ["Sep 10", "home", 45, 100, 38.5, 8],
+  ["Sep 11", "home", 50, 100, 35.0, 8],
+  ["Sep 12", "home", 40, 100, 42.0, 8],
+  ["Sep 18", "home", 8, 70, 43.4, 0],
+  ["Sep 22", "supercharger", 40, 90, 35.0, 0],
+  ["Sep 27", "home", 40, 90, 35.0, 0],
+  ["Sep 30", "home", 65, 72, 5.0, 0],
+];
+let sessions = DEMO.map(r => r.slice());
+
+function fmt(n, d) { return n.toFixed(d === undefined ? 1 : d); }
+function median(a) {
+  const s = a.slice().sort((x, y) => x - y);
+  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+}
+function implied(s) {
+  const swing = s[3] - s[2];
+  return (swing >= 20 && s[4] > 0) ? s[4] / (swing / 100) : null;
+}
+function render() {
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  sessions.forEach((s, i) => {
+    const tr = document.createElement("tr");
+    const imp = implied(s);
+    tr.innerHTML = `<td>${s[0]}</td><td>${s[1]}</td>` +
+      [2, 3, 4, 5].map(j => `<td class="num"><input type="number" data-i="${i}" data-j="${j}" value="${s[j]}"></td>`).join("") +
+      `<td class="num">${imp === null ? "— (top-up)" : fmt(imp) + " kWh"}</td>` +
+      `<td><button data-del="${i}">✕</button></td>`;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll("input").forEach(el => el.addEventListener("change", e => {
+    sessions[+e.target.dataset.i][+e.target.dataset.j] = parseFloat(e.target.value) || 0;
+    render();
+  }));
+  tbody.querySelectorAll("[data-del]").forEach(el => el.addEventListener("click", e => {
+    sessions.splice(+e.target.dataset.del, 1);
+    render();
+  }));
+  compute();
+}
+function compute() {
+  const nominal = parseFloat(document.getElementById("nominal").value) || 75;
+  const limit = parseFloat(document.getElementById("limit").value) || 80;
+  const imps = sessions.map(implied).filter(v => v !== null);
+  const res = document.getElementById("result");
+  const br = document.getElementById("breakdown");
+  if (!imps.length) {
+    res.innerHTML = "Not enough big sessions yet — add sessions with a swing of 20 points or more.";
+    br.textContent = "";
+    return;
+  }
+  const pack = median(imps);
+  const degr = (1 - pack / nominal) * 100;
+  const dwell100 = sessions.reduce((a, s) => a + (s[3] >= 100 ? s[5] : 0), 0);
+  const scShare = sessions.filter(s => s[1] === "supercharger").length / sessions.length;
+  const deep = sessions.filter(s => s[2] <= 10).length;
+  const overDays = new Set(sessions.filter(s => s[3] > limit).map(s => s[0])).size;
+  const pen = {
+    "sitting at 100%": Math.min(30, Math.floor(dwell100 * 2)),
+    "Supercharger share": Math.min(20, Math.floor(scShare * 20)),
+    "deep discharges": Math.min(25, deep * 5),
+    "days above daily limit": Math.min(15, overDays * 2),
+  };
+  const score = Math.max(0, 100 - Object.values(pen).reduce((a, b) => a + b, 0));
+  const streak = sessions.filter(s => s[3] >= 100 && s[5] >= 2).map(s => s[0]);
+  const streakHit = ["Sep 10", "Sep 11", "Sep 12"].every(d => streak.includes(d));
+  res.innerHTML = `Estimated usable pack <span class="big">${fmt(pack)} kWh</span> vs ${fmt(nominal, 0)} kWh when new — ` +
+    `degradation <span class="big">${fmt(degr)}%</span> &nbsp;·&nbsp; care score <span class="big">${score}/100</span>` +
+    (streakHit ? ` &nbsp;·&nbsp; <span class="warn">⚠ charged to 100% on 3 days running</span>` : "");
+  br.textContent = `From ${imps.length} of ${sessions.length} sessions (top-ups ignored). ` +
+    `Care-score penalties: ` + Object.entries(pen).filter(([, v]) => v > 0).map(([k, v]) => `${k} −${v}`).join(", ") + ".";
+}
+document.getElementById("nominal").addEventListener("change", compute);
+document.getElementById("limit").addEventListener("change", compute);
+document.getElementById("add").addEventListener("click", () => {
+  sessions.push(["New", "home", 30, 80, 35.0, 0]);
+  render();
+});
+document.getElementById("reset").addEventListener("click", () => {
+  sessions = DEMO.map(r => r.slice());
+  render();
+});
+render();
+</script>
+</body>
+</html>
